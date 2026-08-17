@@ -74,7 +74,7 @@ STORIA.update({
         "tipo": "narrazione", "capitolo": "Prologo",
         "titolo": "La nave Colibrì",
         "testo": (
-            "Ti chiami Marta e hai la chiave inglese più consumata di tutta la flotta.\n\n"
+            "Ti chiami {nome} e hai la chiave inglese più consumata di tutta la flotta.\n\n"
             "La tua nave si chiama **Colibrì**: piccola, ammaccata, veloce. A bordo con te c'è "
             "**Bit**, un drone da riparazioni grande come un pallone, con la brutta abitudine di "
             "dire sempre la verità.\n\n"
@@ -559,7 +559,7 @@ STORIA.update({
             "Nella sala macchine c'è il vero responsabile: una macchina alta come un albero, con "
             "cento braccia e nessun occhio.\n\n"
             "Sul torace, una targhetta: **UNITÀ DI PULIZIA — ORDINE E SILENZIO**.\n\n"
-            "Bit sbianca. «Marta... questa è roba dell'Ordinatore.»"
+            "Bit sbianca. «{nome}... questa è roba dell'Ordinatore.»"
         ),
         "nemico": {"nome": "Mietitore Silenzioso", "hp": 16, "danno": 2, "attacco": "un braccio meccanico"},
         "fascia": "mista",
@@ -979,7 +979,7 @@ STORIA.update({
             "Bit li mette in fila: sei lucciole che girano intorno alla tua testa come un piccolo "
             "sistema solare.\n\n"
             "«Rotta calcolata» dice Bit, e per una volta la sua voce trema. «**Cuore Silenzioso**. "
-            "Marta... da lì non ha mai fatto ritorno nessuno.»"
+            "{nome}... da lì non ha mai fatto ritorno nessuno.»"
         ),
         "frammento": "Giocare è provare senza paura di sbagliare.",
         "cura": 6,
@@ -1087,7 +1087,7 @@ STORIA.update({
     },
     "c7_intermezzo2": {
         "tipo": "narrazione", "capitolo": "7. Cuore Silenzioso",
-        "titolo": "La risposta di Marta",
+        "titolo": "La risposta di {nome}",
         "testo": (
             "«Hai ragione su una cosa» dici, senza abbassare la chiave inglese. «Le cose si "
             "perdono.»\n\n"
@@ -1147,7 +1147,7 @@ STORIA.update({
             "su Ludo.\n\n"
             "E in mezzo a tutto, la risposta al segnale di Vega. Non era una formula. Era questa:\n\n"
             "> **Una vita è degna di essere ricordata per le cose di cui si è presa cura.**\n\n"
-            "Bit si schiarisce l'altoparlante. «Registrato. Anche te, Marta. Anche te.»\n\n"
+            "Bit si schiarisce l'altoparlante. «Registrato. Anche te, {nome}. Anche te.»\n\n"
             "*FINE — Grazie per aver giocato. E per tutte quelle moltiplicazioni.*"
         ),
     },

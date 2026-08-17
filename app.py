@@ -7,9 +7,13 @@ Avvio:  streamlit run app.py
 Interfaccia volutamente essenziale: testo, vita, una casella per il numero.
 Niente animazioni, niente colori inutili: l'attenzione deve stare sulle tabelline.
 
-Salvataggi e statistiche di lungo periodo vivono in un unico documento JSON
-(vedi archivio.py): su Google Drive quando l'app e' pubblicata, su disco quando
-gira in locale.
+Tre schermate:
+  accesso()   nome + codice segreto. Nessuna lista di partite altrui.
+  scrivania() la casa della giocatrice: continua, ricomincia, allenati.
+  gioco()     la partita.
+
+Salvataggi e statistiche vivono in un unico documento JSON (vedi archivio.py):
+su Google Drive quando l'app e' pubblicata, su disco quando gira in locale.
 """
 
 import random
@@ -17,6 +21,7 @@ import random
 import streamlit as st
 
 import archivio as A
+import identita as ID
 import motore as M
 import storia as S
 import storico as ST
@@ -38,8 +43,6 @@ st.markdown(
       .barra {font-family: monospace; font-size: 1.25rem; letter-spacing: 1px;}
       .domanda {font-size: 2.6rem; font-weight: 700; text-align: center;
                 padding: 0.4rem 0 0.2rem 0;}
-      .esito-ok {font-size: 1.15rem; padding: 0.5rem 0;}
-      .esito-ko {font-size: 1.15rem; padding: 0.5rem 0;}
       .stButton button {font-size: 1.05rem; padding: 0.5rem 1rem;}
       .griglia {font-family: monospace; font-size: 1.05rem; line-height: 1.5;}
     </style>
@@ -62,19 +65,22 @@ COMPLIMENTI = ["Perfetto!", "Esatto!", "Preciso.", "Colpo secco!", "Così si fa.
 # ---------------------------------------------------------------------------
 
 def init():
+    st.session_state.setdefault("utente", None)        # slot autenticato
+    st.session_state.setdefault("nome_utente", "")
+    st.session_state.setdefault("tentativi", 0)
     st.session_state.setdefault("stato", None)
-    st.session_state.setdefault("slot", "marta")
     st.session_state.setdefault("esito", None)
     st.session_state.setdefault("allenamento", None)
     st.session_state.setdefault("storico", None)
     st.session_state.setdefault("da_sincronizzare", 0)
     st.session_state.setdefault("domande_sessione", 0)
-    st.session_state.setdefault("vista_storico", False)
+    st.session_state.setdefault("genitore_aperto", False)
+    st.session_state.setdefault("conferma_ricomincia", False)
 
 
 def autosalva(forza: bool = False):
     """
-    Sincronizza l'archivio se e' passato abbastanza tempo o se il momento e'
+    Sincronizza l'archivio se sono passate abbastanza mosse o se il momento e'
     importante (cambio di scena, oggetto trovato, uscita dal gioco).
     """
     if not st.session_state.stato:
@@ -84,18 +90,35 @@ def autosalva(forza: bool = False):
         return
     M.salva(
         st.session_state.stato,
-        st.session_state.slot,
+        st.session_state.utente,
         st.session_state.storico,
         st.session_state.domande_sessione,
     )
     st.session_state.da_sincronizzare = 0
 
 
+def entra(slot: str, nome: str):
+    st.session_state.utente = slot
+    st.session_state.nome_utente = nome
+    st.session_state.storico = M.carica_storico(slot)
+    st.session_state.tentativi = 0
+
+
+def esci():
+    if st.session_state.stato:
+        autosalva(forza=True)
+    for campo in ("utente", "nome_utente", "stato", "storico", "esito", "allenamento"):
+        st.session_state[campo] = None
+    st.session_state.nome_utente = ""
+    st.session_state.da_sincronizzare = 0
+    st.session_state.conferma_ricomincia = False
+
+
 # ---------------------------------------------------------------------------
-# Menu iniziale
+# Schermata 1 — accesso
 # ---------------------------------------------------------------------------
 
-def menu():
+def accesso():
     st.title("IL SEGNALE DI VEGA")
     st.caption("Sette pianeti e una domanda — un'avventura a moltiplicazioni")
 
@@ -105,66 +128,198 @@ def menu():
         "Se la vita finisce, non si perde la partita: si torna in piedi con tre risposte "
         "giuste di fila."
     )
+    st.divider()
 
-    st.subheader("Nuova avventura")
-    nome = st.text_input("Come ti chiami?", value="Marta")
-    slot = st.text_input(
-        "Nome del salvataggio", value=M.pulisci_slot(nome),
-        help="Le statistiche di lungo periodo sono legate a questo nome: "
-             "usa sempre lo stesso per la stessa persona.",
-    )
-    if st.button("Comincia", type="primary"):
-        storico_esistente = M.carica_storico(slot)
-        ST.apri_sessione(storico_esistente)
-        st.session_state.stato = M.nuovo_stato(nome, storico_esistente)
-        st.session_state.storico = storico_esistente
-        st.session_state.slot = slot
-        st.session_state.domande_sessione = 0
-        st.session_state.da_sincronizzare = 0
-        autosalva(forza=True)
-        st.rerun()
+    if st.session_state.tentativi >= ID.TENTATIVI_MASSIMI:
+        st.error("Troppi codici sbagliati. Ricarica la pagina per riprovare.")
+        area_genitori()
+        return
 
-    salvataggi = M.elenco_salvataggi()
-    if salvataggi:
-        st.subheader("Continua una partita")
-        for voce in salvataggi:
-            colonne = st.columns([4, 2])
-            etichetta = "COMPLETATA · " if voce["finita"] else ""
-            colonne[0].write(
-                f"**{voce['nome']}** ({voce['slot']}) — {etichetta}{voce['capitolo']} · "
-                f"{voce['frammenti']}/6 frammenti · salvato {voce['salvato']}"
-            )
-            if colonne[1].button("Continua", key=f"carica_{voce['slot']}"):
-                stato = M.carica(voce["slot"])
-                if stato is None:
-                    st.error("Salvataggio non trovato nell'archivio.")
-                else:
-                    storico_partita = M.carica_storico(voce["slot"])
-                    ST.apri_sessione(storico_partita)
-                    st.session_state.stato = stato
-                    st.session_state.storico = storico_partita
-                    st.session_state.slot = voce["slot"]
-                    st.session_state.domande_sessione = 0
-                    st.session_state.da_sincronizzare = 0
-                    st.rerun()
+    st.subheader("Entra")
+    st.caption("Se è la prima volta, scegli tu il nome e il codice: la prossima volta "
+               "servono per ritrovare la tua partita.")
+
+    with st.form("accesso", clear_on_submit=False):
+        nome = st.text_input("Il tuo nome")
+        codice = st.text_input("Codice segreto (almeno 4 numeri)", type="password")
+        inviato = st.form_submit_button("Entra", type="primary")
+
+    if inviato:
+        pulito = nome.strip()
+        if not pulito:
+            st.warning("Scrivi il tuo nome.")
+            return
+        slot = M.pulisci_slot(pulito)
+
+        if M.slot_registrato(slot):
+            if ID.verifica(M.credenziale(slot), codice):
+                entra(slot, pulito)
+                st.rerun()
+            else:
+                st.session_state.tentativi += 1
+                rimasti = ID.TENTATIVI_MASSIMI - st.session_state.tentativi
+                st.error(
+                    "Codice sbagliato. Se questo nome è di un'altra persona, scegline "
+                    f"un altro. Tentativi rimasti: {max(0, rimasti)}."
+                )
+        else:
+            valido, messaggio = ID.codice_valido(codice)
+            if not valido:
+                st.warning(messaggio)
+                return
+            M.imposta_credenziale(slot, ID.crea(codice))
+            entra(slot, pulito)
+            st.success("Nome registrato. Segnati il codice: serve ogni volta.")
+            st.rerun()
+
+    area_genitori()
+
+
+# ---------------------------------------------------------------------------
+# Schermata 2 — scrivania della giocatrice
+# ---------------------------------------------------------------------------
+
+def scrivania():
+    slot = st.session_state.utente
+    st.title(f"Ciao {st.session_state.nome_utente}")
+
+    salvata = M.carica(slot)
+    if salvata and not salvata.get("finita"):
+        capitolo = S.STORIA.get(salvata.get("nodo"), {}).get("capitolo", "?")
+        st.info(f"Hai una partita in corso: **{capitolo}** · "
+                f"{len(salvata.get('frammenti', []))}/6 frammenti · "
+                f"salvata {salvata.get('salvato', '?')}")
+        if st.button("Continua l'avventura", type="primary"):
+            ST.apri_sessione(st.session_state.storico)
+            st.session_state.stato = salvata
+            st.session_state.domande_sessione = 0
+            st.session_state.da_sincronizzare = 0
+            st.rerun()
+    else:
+        if salvata and salvata.get("finita"):
+            st.success("Hai già finito l'avventura. Puoi rigiocarla da capo.")
+        if st.button("Comincia l'avventura", type="primary"):
+            avvia_nuova(slot)
 
     st.divider()
-    colonne = st.columns(2)
-    if colonne[0].button("Modalità allenamento (senza storia)"):
+    if st.button("Allenamento (solo tabelline, senza storia)"):
         st.session_state.allenamento = {
-            "slot": st.session_state.slot,
-            "ok": 0, "ko": 0, "statistiche": {}, "ultima_chiave": None,
-            "aiuto_attivo": False, "domanda": None, "da_sincronizzare": 0,
+            "ok": 0, "ko": 0, "statistiche": ST.semina_statistiche(st.session_state.storico),
+            "ultima_chiave": None, "aiuto_attivo": False, "domanda": None,
+            "da_sincronizzare": 0,
         }
-        st.rerun()
-    if colonne[1].button("Storico e statistiche"):
-        st.session_state.vista_storico = not st.session_state.vista_storico
+        ST.apri_sessione(st.session_state.storico)
         st.rerun()
 
-    if st.session_state.vista_storico:
-        pannello_storico_globale()
+    with st.expander("Come vanno le mie tabelline"):
+        mostra_storico(st.session_state.storico)
 
+    if salvata:
+        with st.expander("Ricomincia da capo"):
+            st.caption("La partita in corso viene cancellata. Le statistiche delle "
+                       "tabelline restano: quelle non si perdono mai.")
+            if st.session_state.conferma_ricomincia:
+                colonne = st.columns(2)
+                if colonne[0].button("Sì, cancella e ricomincia"):
+                    M.elimina_partita(slot)
+                    st.session_state.conferma_ricomincia = False
+                    avvia_nuova(slot)
+                if colonne[1].button("No, lascia stare"):
+                    st.session_state.conferma_ricomincia = False
+                    st.rerun()
+            elif st.button("Cancella la partita e ricomincia"):
+                st.session_state.conferma_ricomincia = True
+                st.rerun()
+
+    st.divider()
+    if st.button("Esci"):
+        esci()
+        st.rerun()
     stato_archivio()
+
+
+def avvia_nuova(slot: str):
+    ST.apri_sessione(st.session_state.storico)
+    st.session_state.stato = M.nuovo_stato(st.session_state.nome_utente,
+                                           st.session_state.storico)
+    st.session_state.domande_sessione = 0
+    st.session_state.da_sincronizzare = 0
+    autosalva(forza=True)
+    st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Area per i grandi
+# ---------------------------------------------------------------------------
+
+def password_genitore() -> str | None:
+    try:
+        return str(st.secrets["genitore"]["password"])
+    except Exception:
+        return None
+
+
+def area_genitori():
+    """
+    Statistiche di tutte le giocatrici e reimpostazione dei codici.
+
+    La password sta nei Secrets, non nel codice. Se non e' configurata l'area
+    resta chiusa quando l'app e' pubblicata, e aperta solo in locale: meglio
+    inaccessibile che aperta a tutti per una dimenticanza di configurazione.
+    """
+    with st.expander("Per i grandi"):
+        attesa = password_genitore()
+        if attesa is None:
+            if A.modalita() != "locale":
+                st.caption("Area non configurata. Aggiungi nei Secrets:\n\n"
+                           "```toml\n[genitore]\npassword = \"scegli-una-password\"\n```")
+                return
+            st.caption("Nessuna password configurata: area aperta perché l'app "
+                       "sta girando in locale.")
+        elif not st.session_state.genitore_aperto:
+            with st.form("genitore"):
+                inserita = st.text_input("Password", type="password")
+                if st.form_submit_button("Apri"):
+                    if inserita == attesa:
+                        st.session_state.genitore_aperto = True
+                        st.rerun()
+                    else:
+                        st.error("Password sbagliata.")
+            return
+
+        giocatori = M.elenco_giocatori()
+        if not giocatori:
+            st.caption("Ancora nessuna giocatrice registrata.")
+            return
+
+        scelto = st.selectbox("Giocatrice", giocatori)
+        mostra_storico(M.carica_storico(scelto))
+
+        st.divider()
+        st.write("**Codice segreto dimenticato**")
+        st.caption(f"Assegna un codice nuovo a «{scelto}». La partita e le "
+                   "statistiche non vengono toccate.")
+        with st.form(f"reset_{scelto}"):
+            nuovo = st.text_input("Nuovo codice (almeno 4 numeri)", type="password")
+            if st.form_submit_button("Cambia il codice"):
+                valido, messaggio = ID.codice_valido(nuovo)
+                if not valido:
+                    st.warning(messaggio)
+                elif M.imposta_credenziale(scelto, ID.crea(nuovo)):
+                    st.success(f"Codice di «{scelto}» aggiornato.")
+                else:
+                    st.error(f"Non riuscito → {A.ultimo_errore()}")
+
+        accessi = A.leggi().get("accessi", [])
+        if accessi:
+            st.divider()
+            st.write("**Chi ha usato l'app**")
+            st.table([
+                {"giocatrice": v.get("nome", v.get("slot")), "quando": v.get("quando", "?"),
+                 "capitolo": v.get("capitolo", "?"), "frammenti": v.get("frammenti", 0),
+                 "risposte in partita": v.get("domande_totali", 0)}
+                for v in reversed(accessi[-40:])
+            ])
 
 
 # ---------------------------------------------------------------------------
@@ -173,14 +328,10 @@ def menu():
 
 def allenamento():
     a = st.session_state.allenamento
-    st.title("Allenamento")
-
-    if st.session_state.storico is None or st.session_state.storico.get("giocatore") != M.pulisci_slot(a["slot"]):
-        st.session_state.storico = M.carica_storico(a["slot"])
-        ST.apri_sessione(st.session_state.storico)
-        a["statistiche"] = ST.semina_statistiche(st.session_state.storico)
     storico_corrente = st.session_state.storico
-    st.caption(f"Le risposte finiscono nello storico di **{a['slot']}**.")
+    st.title("Allenamento")
+    st.caption(f"Le risposte finiscono nelle statistiche di "
+               f"**{st.session_state.nome_utente}**.")
 
     if a["domanda"] is None:
         a["domanda"] = M.crea_domanda(a, "prova")
@@ -206,7 +357,7 @@ def allenamento():
         ST.registra(storico_corrente, chiave, giusto)
         a["da_sincronizzare"] += 1
         if a["da_sincronizzare"] >= RISPOSTE_PER_SINCRONIA:
-            M.salva_storico(storico_corrente, a["slot"])
+            M.salva_storico(storico_corrente, st.session_state.utente)
             a["da_sincronizzare"] = 0
         st.session_state.esito_all = (giusto, d["a"], d["b"])
         a["domanda"] = None
@@ -222,15 +373,14 @@ def allenamento():
     st.session_state.esito_all = None
     st.caption(f"Giuste: {a['ok']} · Sbagliate: {a['ko']}")
 
-    with st.expander("Storico permanente di questa giocatrice"):
+    with st.expander("Come vanno le mie tabelline"):
         mostra_storico(storico_corrente)
 
-    if st.button("Torna al menu"):
+    if st.button("Torna indietro"):
         if a["da_sincronizzare"]:
-            M.salva_storico(storico_corrente, a["slot"])
+            M.salva_storico(storico_corrente, st.session_state.utente)
         st.session_state.allenamento = None
         st.session_state.esito_all = None
-        st.session_state.storico = None
         st.rerun()
 
 
@@ -343,9 +493,11 @@ def mostra_scelte(stato):
     for indice, scelta in enumerate(nodo.get("scelte", [])):
         richiesto = scelta.get("richiede")
         if richiesto and stato["oggetti"].get(richiesto, 0) <= 0:
-            st.button(f"{scelta['testo']}  (serve: {richiesto})", key=f"sc_{indice}", disabled=True)
+            st.button(f"{M.personalizza(scelta['testo'], stato)}  (serve: {richiesto})",
+                      key=f"sc_{indice}", disabled=True)
             continue
-        if st.button(scelta["testo"], key=f"sc_{indice}", type="primary" if indice == 0 else "secondary"):
+        if st.button(M.personalizza(scelta["testo"], stato), key=f"sc_{indice}",
+                     type="primary" if indice == 0 else "secondary"):
             M.scegli(stato, scelta["vai_a"])
             autosalva(forza=True)
             st.rerun()
@@ -383,6 +535,9 @@ def mostra_zaino(stato):
 
 def mostra_storico(storico: dict):
     """Le statistiche che restano fra le partite: cosa sa e cosa non sa ancora."""
+    if not storico:
+        st.caption("Storico non disponibile.")
+        return
     riepilogo = ST.riepilogo(storico)
     if not riepilogo["totale_domande"]:
         st.caption("Nessuna risposta registrata finora.")
@@ -433,32 +588,6 @@ def mostra_storico(storico: dict):
         ])
 
 
-def pannello_storico_globale():
-    """Vista dal menu: tutte le giocatrici, chi ha usato l'app e quando."""
-    st.divider()
-    st.subheader("Storico e statistiche")
-    giocatori = M.elenco_giocatori()
-    if not giocatori:
-        st.caption("Ancora nessuna partita registrata.")
-    else:
-        scelto = st.selectbox("Giocatrice", giocatori)
-        mostra_storico(M.carica_storico(scelto))
-
-    accessi = A.leggi().get("accessi", [])
-    if accessi:
-        with st.expander("Chi ha usato l'app"):
-            st.table([
-                {"giocatrice": v.get("nome", v.get("slot")), "quando": v.get("quando", "?"),
-                 "capitolo": v.get("capitolo", "?"), "frammenti": v.get("frammenti", 0),
-                 "risposte in partita": v.get("domande_totali", 0)}
-                for v in reversed(accessi[-40:])
-            ])
-
-    if st.button("Chiudi lo storico"):
-        st.session_state.vista_storico = False
-        st.rerun()
-
-
 def stato_archivio():
     """Dove stanno finendo i dati: informazione onesta, non decorativa."""
     st.divider()
@@ -472,7 +601,7 @@ def stato_archivio():
 
 
 # ---------------------------------------------------------------------------
-# Pannelli in fondo
+# Pannelli in fondo alla partita
 # ---------------------------------------------------------------------------
 
 def pannelli(stato):
@@ -487,8 +616,8 @@ def pannelli(stato):
         for frammento in stato["frammenti"]:
             st.write(f"- *{frammento}*")
 
-    with st.expander("Per i grandi: come stanno andando le tabelline"):
-        etichette = ["Questa partita", "Storico completo"]
+    with st.expander("Come vanno le tabelline"):
+        etichette = ["Questa partita", "Tutto lo storico"]
         scelta = st.radio("Cosa guardare", etichette, horizontal=True,
                           label_visibility="collapsed")
         if scelta == etichette[0]:
@@ -506,33 +635,28 @@ def pannelli(stato):
             else:
                 st.caption("Servono un po' più di domande per dire qualcosa di sensato.")
         else:
-            if st.session_state.storico:
-                mostra_storico(st.session_state.storico)
-            else:
-                st.caption("Storico non caricato.")
+            mostra_storico(st.session_state.storico)
 
 
 def barra_laterale(stato):
     with st.sidebar:
         st.write(f"**{stato['nome']}**")
-        st.caption(f"Salvataggio: {st.session_state.slot}")
         in_attesa = st.session_state.da_sincronizzare
         if in_attesa:
-            st.caption(f"{in_attesa} mosse non ancora sincronizzate "
+            st.caption(f"{in_attesa} mosse non ancora salvate "
                        f"(si salva ogni {RISPOSTE_PER_SINCRONIA}).")
         else:
-            st.caption("Tutto sincronizzato.")
+            st.caption("Tutto salvato.")
         if st.button("Salva adesso"):
-            if M.salva(stato, st.session_state.slot, st.session_state.storico,
+            if M.salva(stato, st.session_state.utente, st.session_state.storico,
                        st.session_state.domande_sessione):
                 st.session_state.da_sincronizzare = 0
-                st.success("Salvato nell'archivio.")
+                st.success("Salvato.")
             else:
                 st.error(f"Salvataggio non riuscito → {A.ultimo_errore()}")
-        if st.button("Torna al menu"):
+        if st.button("Metti in pausa"):
             autosalva(forza=True)
             st.session_state.stato = None
-            st.session_state.storico = None
             st.session_state.esito = None
             st.rerun()
         st.divider()
@@ -547,14 +671,12 @@ def barra_laterale(stato):
 
 def gioco():
     stato = st.session_state.stato
-    if st.session_state.storico is None:
-        st.session_state.storico = M.carica_storico(st.session_state.slot)
     nodo = S.STORIA[stato["nodo"]]
     barra_laterale(stato)
     intestazione(stato)
 
-    st.subheader(nodo.get("titolo", ""))
-    st.markdown(nodo.get("testo", ""))
+    st.subheader(M.personalizza(nodo.get("titolo", ""), stato))
+    st.markdown(M.personalizza(nodo.get("testo", ""), stato))
 
     mostra_esito()
 
@@ -562,6 +684,10 @@ def gioco():
         st.balloons()
         st.success("Avventura completata.")
         pannelli(stato)
+        if st.button("Torna indietro"):
+            autosalva(forza=True)
+            st.session_state.stato = None
+            st.rerun()
         return
 
     if stato["morte"]:
@@ -582,9 +708,11 @@ def gioco():
 # ---------------------------------------------------------------------------
 
 init()
-if st.session_state.allenamento is not None:
+if st.session_state.utente is None:
+    accesso()
+elif st.session_state.allenamento is not None:
     allenamento()
-elif st.session_state.stato is None:
-    menu()
-else:
+elif st.session_state.stato is not None:
     gioco()
+else:
+    scrivania()

@@ -166,6 +166,21 @@ def nodo_corrente(stato: dict) -> dict:
     return S.STORIA[stato["nodo"]]
 
 
+def personalizza(testo: str, stato: dict) -> str:
+    """
+    Sostituisce {nome} col nome di chi sta giocando.
+
+    Il nome sta in un segnaposto dentro `storia.py` invece che cablato nel testo:
+    cosi' la storia resta un file di dati validi per qualsiasi giocatore, e
+    aggiungere un'altra variabile in futuro costa una riga qui, non 82 modifiche
+    sparse. Il fallback e' "tu": una frase come «Ti chiami tu» sarebbe brutta ma
+    non manderebbe in errore il gioco se il nome mancasse.
+    """
+    if not testo:
+        return testo
+    return testo.replace("{nome}", (stato.get("nome") or "").strip() or "tu")
+
+
 def fascia_corrente(stato: dict) -> str:
     return nodo_corrente(stato).get("fascia", "mista")
 
@@ -331,14 +346,16 @@ def rispondi(stato: dict, risposta: int | None, storico: dict | None = None) -> 
     if contesto == "prova":
         stato["domanda"] = None
         if giusto:
-            diario(stato, f"[ok] {a}x{b}={corretto}. {nodo.get('testo_ok', 'Riuscito!')}")
+            diario(stato, f"[ok] {a}x{b}={corretto}. "
+                          f"{personalizza(nodo.get('testo_ok', 'Riuscito!'), stato)}")
             for nome, quanti in nodo.get("oggetti_ok", {}).items():
                 aggiungi_oggetto(stato, nome, quanti)
             if nodo.get("cura_ok"):
                 cura(stato, nodo["cura_ok"])
             entra_nodo(stato, nodo["vai_a"])
         else:
-            diario(stato, f"[x] {a}x{b} fa {corretto}. {nodo.get('testo_ko', 'Colpita!')}")
+            diario(stato, f"[x] {a}x{b} fa {corretto}. "
+                          f"{personalizza(nodo.get('testo_ko', 'Colpita!'), stato)}")
             _subisci(stato, nodo.get("danno", 2))
             _dopo_danno(stato, nodo.get("vai_a_ko", nodo["vai_a"]))
         return esito
@@ -555,7 +572,40 @@ def elenco_salvataggi() -> list[dict]:
 
 def elenco_giocatori() -> list[str]:
     arch = A.leggi()
-    return sorted(set(arch.get("partite", {})) | set(arch.get("storici", {})))
+    return sorted(set(arch.get("partite", {})) | set(arch.get("storici", {}))
+                  | set(arch.get("credenziali", {})))
+
+
+# ---------------------------------------------------------------------------
+# 6b. Codici segreti
+# ---------------------------------------------------------------------------
+
+def credenziale(nome_slot: str) -> dict | None:
+    return A.leggi().get("credenziali", {}).get(pulisci_slot(nome_slot))
+
+
+def slot_registrato(nome_slot: str) -> bool:
+    """
+    Vero se il nome e' gia' stato preso da qualcuno con un codice.
+
+    I salvataggi creati prima dei codici non hanno credenziale: restano
+    adottabili dal primo che entra con quel nome e sceglie un codice. E' un buco
+    noto e limitato al passaggio di versione.
+    """
+    return credenziale(nome_slot) is not None
+
+
+def imposta_credenziale(nome_slot: str, nuova: dict | None) -> bool:
+    """Salva (o cancella, con None) il codice segreto di una giocatrice."""
+    slot = pulisci_slot(nome_slot)
+
+    def modifica(arch: dict) -> None:
+        if nuova is None:
+            arch["credenziali"].pop(slot, None)
+        else:
+            arch["credenziali"][slot] = nuova
+
+    return A.aggiorna(modifica)
 
 
 # ---------------------------------------------------------------------------

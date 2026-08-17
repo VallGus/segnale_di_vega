@@ -7,10 +7,16 @@ ricopiate a mano nel TOML si rompono quasi sempre, e l'errore che ne esce
 ("No key could be detected", "Incorrect padding") non dice niente di utile.
 
 Uso:
-    python prepara_segreti.py ~/Downloads/segnale-di-vega-abc123.json FILE_ID
+    python prepara_segreti.py CHIAVE.json FILE_ID [PASSWORD_GENITORE]
 
-dove FILE_ID e' il pezzo dell'indirizzo del file su Drive fra /d/ e /view:
-    https://drive.google.com/file/d/QUESTO_PEZZO/view
+    CHIAVE.json        il JSON scaricato da Google Cloud Console
+    FILE_ID            il pezzo dell'indirizzo del file su Drive fra /d/ e /view:
+                       https://drive.google.com/file/d/QUESTO_PEZZO/view
+    PASSWORD_GENITORE  facoltativa. Apre l'area "Per i grandi" nell'app, da cui
+                       si vedono le statistiche di tutte e si reimpostano i
+                       codici dimenticati. Se non la metti, quell'area resta
+                       chiusa quando l'app e' pubblicata (scelta voluta: meglio
+                       inaccessibile che aperta a tutti per una dimenticanza).
 
 Scrive .streamlit/secrets.toml e stampa a schermo lo stesso contenuto, da
 incollare nei Secrets di Streamlit Community Cloud.
@@ -26,15 +32,17 @@ CAMPI_ATTESI = ("type", "project_id", "private_key_id", "private_key",
                 "client_email", "client_id", "token_uri")
 
 
-def componi(credenziali: dict, file_id: str) -> str:
+def componi(credenziali: dict, file_id: str, password: str | None) -> str:
     righe = [
         "# Generato da prepara_segreti.py — NON caricare questo file su GitHub.",
         "",
         "[drive]",
         f'file_id = "{file_id}"',
         "",
-        "[gcp_service_account]",
     ]
+    if password:
+        righe += ["[genitore]", f'password = "{password}"', ""]
+    righe.append("[gcp_service_account]")
     for campo, valore in credenziali.items():
         if campo == "private_key":
             # Le sequenze \n restano letterali: e' cosi' che le vuole google-auth.
@@ -46,17 +54,23 @@ def componi(credenziali: dict, file_id: str) -> str:
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         print(__doc__)
         raise SystemExit(1)
 
-    percorso_json, file_id = Path(sys.argv[1]).expanduser(), sys.argv[2].strip()
+    percorso_json = Path(sys.argv[1]).expanduser()
+    file_id = sys.argv[2].strip()
+    password = sys.argv[3].strip() if len(sys.argv) == 4 else None
 
     if not percorso_json.exists():
         raise SystemExit(f"File non trovato: {percorso_json}")
     if "/" in file_id or len(file_id) < 20:
         raise SystemExit("Il secondo argomento deve essere solo il file_id, "
                          "non l'indirizzo completo. Sta fra /d/ e /view.")
+    if password is not None and len(password) < 8:
+        raise SystemExit("La password del genitore deve essere di almeno 8 caratteri.")
+    if password and '"' in password:
+        raise SystemExit("Evita le virgolette doppie nella password.")
 
     credenziali = json.loads(percorso_json.read_text(encoding="utf-8"))
     mancanti = [c for c in CAMPI_ATTESI if c not in credenziali]
@@ -64,20 +78,26 @@ def main() -> None:
         raise SystemExit("Il JSON non sembra la chiave di un service account. "
                          f"Campi mancanti: {', '.join(mancanti)}")
 
-    contenuto = componi(credenziali, file_id)
+    contenuto = componi(credenziali, file_id, password)
     destinazione = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
     destinazione.parent.mkdir(exist_ok=True)
     destinazione.write_text(contenuto, encoding="utf-8")
 
     print(f"Scritto: {destinazione}")
     print(f"Service account: {credenziali['client_email']}")
+    if not password:
+        print("Nessuna password genitore: l'area «Per i grandi» sara' chiusa "
+              "sull'app pubblicata. Rilancia con un terzo argomento per attivarla.")
     print()
-    print("Controlla che questa email compaia fra i condivisi della cartella "
-          "su Drive, con ruolo Editor.")
+    print("Controlla che l'email del service account compaia fra i condivisi "
+          "della cartella su Drive, con ruolo Editor.")
     print()
     print("--- da incollare nei Secrets di Streamlit Community Cloud ---")
     print(contenuto)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BrokenPipeError:
+        pass          # succede solo quando l'output viene troncato (| head)

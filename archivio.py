@@ -7,9 +7,10 @@ Un unico documento JSON contiene tutto:
     {
       "versione": 1,
       "aggiornato": "2026-08-17 12:00",
-      "partite":  { "marta": {...stato...} },
-      "storici":  { "marta": {...storico permanente...} },
-      "accessi":  [ {"giocatore": "marta", "quando": "...", "domande": 34} ]
+      "partite":     { "marta": {...stato...} },
+      "storici":     { "marta": {...storico permanente...} },
+      "credenziali": { "marta": {...impronta del codice segreto...} },
+      "accessi":     [ {"giocatore": "marta", "quando": "...", "domande": 34} ]
     }
 
 Due modalita', scelte automaticamente:
@@ -58,7 +59,8 @@ _ultimo_errore: str | None = None
 
 
 def archivio_vuoto() -> dict:
-    return {"versione": 1, "aggiornato": None, "partite": {}, "storici": {}, "accessi": []}
+    return {"versione": 1, "aggiornato": None, "partite": {}, "storici": {},
+            "credenziali": {}, "accessi": []}
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +154,7 @@ def _normalizza(dati: dict) -> dict:
     base = archivio_vuoto()
     if isinstance(dati, dict):
         base.update({k: v for k, v in dati.items() if k in base or k == "versione"})
-    for campo, vuoto in (("partite", {}), ("storici", {}), ("accessi", [])):
+    for campo, vuoto in (("partite", {}), ("storici", {}), ("credenziali", {}), ("accessi", [])):
         if not isinstance(base.get(campo), type(vuoto)):
             base[campo] = vuoto
     return base

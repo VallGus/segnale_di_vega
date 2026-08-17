@@ -13,3 +13,6 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+
+# Copie di sicurezza dell'archivio
+copia_prima_della_pulizia_*.json

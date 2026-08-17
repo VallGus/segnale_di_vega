@@ -50,6 +50,10 @@ def percorso_locale() -> Path:
     scelta = os.environ.get("VEGA_ARCHIVIO")
     return Path(scelta).expanduser() if scelta else CARTELLA_LOCALE / "archivio_vega.json"
 
+
+def _archivio_forzato() -> bool:
+    return bool(os.environ.get("VEGA_ARCHIVIO"))
+
 AMBITI_DRIVE = ["https://www.googleapis.com/auth/drive"]
 
 # Cache in memoria: evita di rileggere Drive a ogni rerun di Streamlit.
@@ -80,7 +84,33 @@ def _segreti() -> dict:
 
 
 def modalita() -> str:
+    """
+    "drive" oppure "locale".
+
+    VEGA_ARCHIVIO ha la precedenza assoluta sui segreti: se e' impostata si
+    lavora su file, punto. Prima non era cosi', e la conseguenza e' stata che le
+    prove lanciate su una macchina con le credenziali Drive configurate
+    scrivevano sull'archivio vero — creando giocatrici finte e sovrascrivendo
+    una partita reale. Spostare il percorso del file non basta: bisogna
+    escludere del tutto la strada che porta a Drive.
+    """
+    if _archivio_forzato():
+        return "locale"
     return "drive" if _segreti() else "locale"
+
+
+def segreti_presenti() -> bool:
+    """
+    Vero se l'app ha delle credenziali configurate, a prescindere da dove sta
+    scrivendo adesso.
+
+    Serve a distinguere «sto sviluppando sul portatile senza configurazione» da
+    «questa installazione e' destinata alla pubblicazione»: la seconda va
+    protetta anche se in questo momento sta scrivendo su file. Usare modalita()
+    per questa decisione era sbagliato, perche' le prove forzano la modalita'
+    locale e si portavano dietro i permessi dello sviluppo.
+    """
+    return bool(_segreti())
 
 
 def ultimo_errore() -> str | None:

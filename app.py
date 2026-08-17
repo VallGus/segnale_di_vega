@@ -264,18 +264,20 @@ def area_genitori():
     Statistiche di tutte le giocatrici e reimpostazione dei codici.
 
     La password sta nei Secrets, non nel codice. Se non e' configurata l'area
-    resta chiusa quando l'app e' pubblicata, e aperta solo in locale: meglio
-    inaccessibile che aperta a tutti per una dimenticanza di configurazione.
+    resta chiusa su qualsiasi installazione che abbia dei segreti — cioe' su
+    tutto cio' che e' destinato alla pubblicazione — e aperta solo su una copia
+    di sviluppo senza configurazione. Meglio inaccessibile che aperta a tutti
+    per una dimenticanza.
     """
     with st.expander("Per i grandi"):
         attesa = password_genitore()
         if attesa is None:
-            if A.modalita() != "locale":
+            if A.segreti_presenti():
                 st.caption("Area non configurata. Aggiungi nei Secrets:\n\n"
                            "```toml\n[genitore]\npassword = \"scegli-una-password\"\n```")
                 return
-            st.caption("Nessuna password configurata: area aperta perché l'app "
-                       "sta girando in locale.")
+            st.caption("Nessuna password configurata: area aperta perché questa "
+                       "copia non ha credenziali.")
         elif not st.session_state.genitore_aperto:
             with st.form("genitore"):
                 inserita = st.text_input("Password", type="password")

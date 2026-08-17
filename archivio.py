@@ -32,6 +32,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -56,10 +57,23 @@ def _archivio_forzato() -> bool:
 
 AMBITI_DRIVE = ["https://www.googleapis.com/auth/drive"]
 
+# Quante volte lasciar ritentare a Google le richieste che tornano 5xx.
+RITENTATIVI_GOOGLE = 3
+ATTESA_PRIMA_DEL_RITENTATIVO = 0.4
+
 # Cache in memoria: evita di rileggere Drive a ogni rerun di Streamlit.
 _cache: dict = {"dati": None, "letto": 0.0}
-_servizio_drive = None
 _ultimo_errore: str | None = None
+
+# Il client Drive NON si tiene in una variabile globale.
+#
+# Sotto googleapiclient c'e' httplib2, che non e' thread-safe: Streamlit esegue
+# ogni rerun in un thread diverso, e due thread che scrivono sulla stessa
+# connessione TLS la corrompono. Il sintomo e' un errore illeggibile,
+# "SSLError: DECRYPTION_FAILED_OR_BAD_RECORD_MAC", che con una persona sola
+# compare di rado e con tre bambine diventa sistematico.
+# Un client per thread risolve alla radice.
+_per_thread = threading.local()
 
 
 def archivio_vuoto() -> dict:
@@ -128,22 +142,46 @@ def email_service_account() -> str | None:
 # Backend Drive
 # ---------------------------------------------------------------------------
 
-def _servizio():
-    global _servizio_drive
-    if _servizio_drive is not None:
-        return _servizio_drive
+def _servizio(ricostruisci: bool = False):
+    if ricostruisci:
+        _per_thread.servizio = None
+    if getattr(_per_thread, "servizio", None) is not None:
+        return _per_thread.servizio
     from google.oauth2.service_account import Credentials
     from googleapiclient.discovery import build
 
     conf = _segreti()
     credenziali = Credentials.from_service_account_info(conf["credenziali"], scopes=AMBITI_DRIVE)
-    _servizio_drive = build("drive", "v3", credentials=credenziali, cache_discovery=False)
-    return _servizio_drive
+    _per_thread.servizio = build("drive", "v3", credentials=credenziali, cache_discovery=False)
+    return _per_thread.servizio
+
+
+def _con_ritentativo(operazione):
+    """
+    Esegue l'operazione e, se la connessione si e' guastata, la ripete una volta
+    con un client nuovo.
+
+    Una connessione TLS puo' rompersi per motivi che non dipendono da noi: rete
+    mobile che cambia cella, connessione tenuta aperta troppo a lungo, hiccup del
+    server. Ricostruire il client e riprovare una volta trasforma un errore
+    visibile in un ritardo di mezzo secondo. Si ritenta una volta sola: se
+    fallisce anche la seconda, il problema e' reale e va mostrato.
+    """
+    try:
+        return operazione(_servizio())
+    except Exception:
+        time.sleep(ATTESA_PRIMA_DEL_RITENTATIVO)
+        return operazione(_servizio(ricostruisci=True))
 
 
 def _leggi_drive() -> dict:
     conf = _segreti()
-    contenuto = _servizio().files().get_media(fileId=conf["file_id"]).execute()
+
+    def operazione(servizio):
+        return servizio.files().get_media(fileId=conf["file_id"]).execute(
+            num_retries=RITENTATIVI_GOOGLE)
+
+    contenuto = _con_ritentativo(operazione)
     testo = contenuto.decode("utf-8").strip() if isinstance(contenuto, bytes) else str(contenuto)
     if not testo:
         return archivio_vuoto()
@@ -155,8 +193,16 @@ def _scrivi_drive(dati: dict) -> None:
 
     conf = _segreti()
     corpo = json.dumps(dati, ensure_ascii=False, indent=1).encode("utf-8")
-    media = MediaIoBaseUpload(io.BytesIO(corpo), mimetype="application/json", resumable=False)
-    _servizio().files().update(fileId=conf["file_id"], media_body=media).execute()
+
+    def operazione(servizio):
+        # Il MediaIoBaseUpload va ricreato a ogni tentativo: dopo un errore il
+        # flusso sottostante e' stato consumato in parte e ripartirebbe da meta'.
+        media = MediaIoBaseUpload(io.BytesIO(corpo), mimetype="application/json",
+                                  resumable=False)
+        return servizio.files().update(fileId=conf["file_id"], media_body=media).execute(
+            num_retries=RITENTATIVI_GOOGLE)
+
+    _con_ritentativo(operazione)
 
 
 # ---------------------------------------------------------------------------

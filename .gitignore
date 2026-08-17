@@ -1,3 +1,15 @@
+# Salvataggi e archivio locale: dati di gioco, non codice
 salvataggi/
+
+# CREDENZIALI — non devono mai finire su GitHub
+.streamlit/secrets.toml
+*.json.chiave
+credenziali*.json
+service-account*.json
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/

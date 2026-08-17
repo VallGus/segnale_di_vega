@@ -1,0 +1,195 @@
+# -*- coding: utf-8 -*-
+"""
+ARCHIVIO — dove vivono i dati del gioco.
+
+Un unico documento JSON contiene tutto:
+
+    {
+      "versione": 1,
+      "aggiornato": "2026-08-17 12:00",
+      "partite":  { "marta": {...stato...} },
+      "storici":  { "marta": {...storico permanente...} },
+      "accessi":  [ {"giocatore": "marta", "quando": "...", "domande": 34} ]
+    }
+
+Due modalita', scelte automaticamente:
+
+  * "drive"   -> se in st.secrets ci sono le credenziali del service account e
+                 l'id del file. Il file NON viene creato dall'app: lo crei tu
+                 su Drive e lo condividi in scrittura col service account.
+                 Motivo: un service account non ha quota di storage propria e
+                 la creazione di file su un Drive consumer puo' fallire.
+                 L'aggiornamento di un file esistente e' invece sempre valido.
+  * "locale"  -> file in ./salvataggi/archivio_vega.json (sviluppo sul Mac).
+
+Nessuna dipendenza obbligatoria: se le librerie Google mancano o i segreti non
+ci sono, si ricade su locale senza rompere niente.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import time
+from pathlib import Path
+
+CARTELLA_LOCALE = Path(__file__).resolve().parent / "salvataggi"
+FILE_LOCALE = CARTELLA_LOCALE / "archivio_vega.json"
+
+AMBITI_DRIVE = ["https://www.googleapis.com/auth/drive"]
+
+# Cache in memoria: evita di rileggere Drive a ogni rerun di Streamlit.
+_cache: dict = {"dati": None, "letto": 0.0}
+_servizio_drive = None
+_ultimo_errore: str | None = None
+
+
+def archivio_vuoto() -> dict:
+    return {"versione": 1, "aggiornato": None, "partite": {}, "storici": {}, "accessi": []}
+
+
+# ---------------------------------------------------------------------------
+# Configurazione
+# ---------------------------------------------------------------------------
+
+def _segreti() -> dict:
+    """Legge st.secrets in modo difensivo: fuori da Streamlit non deve esplodere."""
+    try:
+        import streamlit as st
+        return {
+            "credenziali": dict(st.secrets["gcp_service_account"]),
+            "file_id": str(st.secrets["drive"]["file_id"]),
+        }
+    except Exception:
+        return {}
+
+
+def modalita() -> str:
+    return "drive" if _segreti() else "locale"
+
+
+def ultimo_errore() -> str | None:
+    return _ultimo_errore
+
+
+def email_service_account() -> str | None:
+    conf = _segreti()
+    if conf:
+        return conf["credenziali"].get("client_email")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Backend Drive
+# ---------------------------------------------------------------------------
+
+def _servizio():
+    global _servizio_drive
+    if _servizio_drive is not None:
+        return _servizio_drive
+    from google.oauth2.service_account import Credentials
+    from googleapiclient.discovery import build
+
+    conf = _segreti()
+    credenziali = Credentials.from_service_account_info(conf["credenziali"], scopes=AMBITI_DRIVE)
+    _servizio_drive = build("drive", "v3", credentials=credenziali, cache_discovery=False)
+    return _servizio_drive
+
+
+def _leggi_drive() -> dict:
+    conf = _segreti()
+    contenuto = _servizio().files().get_media(fileId=conf["file_id"]).execute()
+    testo = contenuto.decode("utf-8").strip() if isinstance(contenuto, bytes) else str(contenuto)
+    if not testo:
+        return archivio_vuoto()
+    return json.loads(testo)
+
+
+def _scrivi_drive(dati: dict) -> None:
+    from googleapiclient.http import MediaIoBaseUpload
+
+    conf = _segreti()
+    corpo = json.dumps(dati, ensure_ascii=False, indent=1).encode("utf-8")
+    media = MediaIoBaseUpload(io.BytesIO(corpo), mimetype="application/json", resumable=False)
+    _servizio().files().update(fileId=conf["file_id"], media_body=media).execute()
+
+
+# ---------------------------------------------------------------------------
+# Backend locale
+# ---------------------------------------------------------------------------
+
+def _leggi_locale() -> dict:
+    if not FILE_LOCALE.exists():
+        return archivio_vuoto()
+    return json.loads(FILE_LOCALE.read_text(encoding="utf-8"))
+
+
+def _scrivi_locale(dati: dict) -> None:
+    CARTELLA_LOCALE.mkdir(exist_ok=True)
+    FILE_LOCALE.write_text(json.dumps(dati, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# API pubblica
+# ---------------------------------------------------------------------------
+
+def _normalizza(dati: dict) -> dict:
+    base = archivio_vuoto()
+    if isinstance(dati, dict):
+        base.update({k: v for k, v in dati.items() if k in base or k == "versione"})
+    for campo, vuoto in (("partite", {}), ("storici", {}), ("accessi", [])):
+        if not isinstance(base.get(campo), type(vuoto)):
+            base[campo] = vuoto
+    return base
+
+
+def leggi(forza: bool = False) -> dict:
+    """Ritorna l'archivio completo. Usa la cache salvo forza=True."""
+    global _ultimo_errore
+    if not forza and _cache["dati"] is not None:
+        return _cache["dati"]
+    try:
+        dati = _leggi_drive() if modalita() == "drive" else _leggi_locale()
+        _ultimo_errore = None
+    except Exception as errore:                     # rete giu', permessi, JSON rotto
+        _ultimo_errore = f"lettura: {type(errore).__name__}: {errore}"
+        dati = _cache["dati"] if _cache["dati"] is not None else archivio_vuoto()
+    _cache["dati"] = _normalizza(dati)
+    _cache["letto"] = time.time()
+    return _cache["dati"]
+
+
+def scrivi(dati: dict) -> bool:
+    """Salva l'archivio. Ritorna True se il salvataggio remoto e' andato a buon fine."""
+    global _ultimo_errore
+    dati = _normalizza(dati)
+    dati["aggiornato"] = time.strftime("%Y-%m-%d %H:%M")
+    _cache["dati"] = dati
+    try:
+        if modalita() == "drive":
+            _scrivi_drive(dati)
+        else:
+            _scrivi_locale(dati)
+        _ultimo_errore = None
+        return True
+    except Exception as errore:
+        _ultimo_errore = f"scrittura: {type(errore).__name__}: {errore}"
+        return False
+
+
+def aggiorna(modifica) -> bool:
+    """
+    Rilegge l'archivio dalla fonte, applica `modifica(archivio)` e riscrive.
+
+    La rilettura serve perche' piu' persone possono giocare in parallelo: cosi'
+    si scrive sopra solo la propria parte e non si cancella quella degli altri.
+    Non e' un lock: se due salvano nello stesso secondo, vince l'ultimo. Per un
+    uso familiare e' un rischio accettabile.
+    """
+    dati = leggi(forza=True)
+    modifica(dati)
+    return scrivi(dati)
+
+
+def invalida_cache() -> None:
+    _cache["dati"] = None

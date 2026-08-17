@@ -3,21 +3,22 @@ Motore di gioco per "Il Segnale di Vega".
 
 Contiene tutta la logica: generazione delle moltiplicazioni (pesata sulle
 tabelline statisticamente piu' difficili + adattiva sugli errori del giocatore),
-combattimento a turni, oggetti, morte/rianimazione, salvataggi su file JSON.
+combattimento a turni, oggetti, morte/rianimazione, salvataggi.
+
+I salvataggi passano da `archivio.py` (un unico documento JSON, su Google Drive
+o su disco locale) e le statistiche di lungo periodo da `storico.py`.
 
 Nessuna dipendenza da Streamlit: si puo' testare e simulare da riga di comando.
 """
 
 from __future__ import annotations
 
-import json
 import random
 import time
-from pathlib import Path
 
+import archivio as A
 import storia as S
-
-CARTELLA_SALVATAGGI = Path(__file__).resolve().parent / "salvataggi"
+import storico as ST
 
 VITA_INIZIALE = 14
 DANNO_BASE = 2          # danno del colpo del giocatore
@@ -121,7 +122,12 @@ def suggerimento(a: int, b: int) -> str:
 # 2. Stato della partita
 # ---------------------------------------------------------------------------
 
-def nuovo_stato(nome_giocatrice: str = "Marta") -> dict:
+def nuovo_stato(nome_giocatrice: str = "Marta", storico_precedente: dict | None = None) -> dict:
+    """
+    Crea una partita nuova. Se si passa uno storico, le statistiche iniziali
+    vengono seminate da quello: il motore adattivo sa da subito su quali
+    tabelline insistere, invece di ripartire da zero a ogni partita.
+    """
     stato = {
         "nome": nome_giocatrice,
         "nodo": None,
@@ -145,6 +151,8 @@ def nuovo_stato(nome_giocatrice: str = "Marta") -> dict:
         "finita": False,
         "creato": time.strftime("%Y-%m-%d %H:%M"),
     }
+    if storico_precedente:
+        stato["statistiche"] = ST.semina_statistiche(storico_precedente)
     entra_nodo(stato, S.NODO_INIZIALE)
     return stato
 
@@ -217,10 +225,12 @@ def scegli(stato: dict, id_nodo: str) -> None:
 # 4. Risoluzione delle risposte
 # ---------------------------------------------------------------------------
 
-def _registra(stato: dict, a: int, b: int, giusto: bool) -> None:
+def _registra(stato: dict, a: int, b: int, giusto: bool, storico: dict | None = None) -> None:
     dati = stato["statistiche"].setdefault(chiave(a, b), {"ok": 0, "ko": 0})
     dati["ok" if giusto else "ko"] += 1
     stato["ultima_chiave"] = chiave(a, b)
+    if storico is not None:
+        ST.registra(storico, chiave(a, b), giusto)
     if giusto:
         stato["totale_ok"] += 1
         stato["serie_giuste"] += 1
@@ -266,8 +276,14 @@ def _vittoria(stato: dict) -> dict:
     return {"esito": "vittoria"}
 
 
-def rispondi(stato: dict, risposta: int | None) -> dict:
-    """Applica la risposta alla domanda in corso. Ritorna un riepilogo per la UI."""
+def rispondi(stato: dict, risposta: int | None, storico: dict | None = None) -> dict:
+    """
+    Applica la risposta alla domanda in corso. Ritorna un riepilogo per la UI.
+
+    Se si passa `storico`, la risposta viene registrata anche nella storia di
+    lungo periodo della giocatrice (in memoria: il salvataggio e' a carico di chi
+    chiama, cosi' si possono accorpare piu' risposte in una sola scrittura).
+    """
     domanda = stato["domanda"]
     if domanda is None:
         return {"esito": "nessuna_domanda"}
@@ -277,7 +293,7 @@ def rispondi(stato: dict, risposta: int | None) -> dict:
     giusto = (risposta == corretto)
     contesto = domanda["contesto"]
     stato["aiuto_attivo"] = False
-    _registra(stato, a, b, giusto)
+    _registra(stato, a, b, giusto, storico)
 
     esito = {
         "giusto": giusto,
@@ -437,44 +453,109 @@ def _applica_effetto(stato: dict, nome: str) -> None:
 # 6. Salvataggi
 # ---------------------------------------------------------------------------
 
-def _percorso(nome_slot: str) -> Path:
-    pulito = "".join(c for c in nome_slot if c.isalnum() or c in " _-").strip() or "partita"
-    return CARTELLA_SALVATAGGI / f"{pulito}.json"
+def pulisci_slot(nome_slot: str) -> str:
+    pulito = "".join(c for c in nome_slot.lower() if c.isalnum() or c in " _-").strip()
+    return pulito.replace(" ", "_") or "partita"
 
 
-def salva(stato: dict, nome_slot: str) -> Path:
-    CARTELLA_SALVATAGGI.mkdir(exist_ok=True)
-    percorso = _percorso(nome_slot)
-    dati = dict(stato)
-    dati["salvato"] = time.strftime("%Y-%m-%d %H:%M")
-    percorso.write_text(json.dumps(dati, ensure_ascii=False, indent=1), encoding="utf-8")
-    return percorso
+def salva(stato: dict, nome_slot: str, storico: dict | None = None,
+          domande_sessione: int = 0) -> bool:
+    """
+    Scrive partita (e storico, se dato) nell'archivio condiviso.
+
+    Rilegge prima di scrivere, cosi' due giocatrici in parallelo non si
+    cancellano a vicenda. Ritorna True se la scrittura remota e' riuscita.
+    """
+    slot = pulisci_slot(nome_slot)
+    dati_partita = dict(stato)
+    dati_partita["salvato"] = time.strftime("%Y-%m-%d %H:%M")
+    dati_partita["slot"] = slot
+
+    def modifica(arch: dict) -> None:
+        arch["partite"][slot] = dati_partita
+        if storico is not None:
+            arch["storici"][slot] = storico
+        accessi = arch.setdefault("accessi", [])
+        voce = {
+            "slot": slot,
+            "nome": stato.get("nome", slot),
+            "quando": dati_partita["salvato"],
+            "domande_totali": stato.get("totale_ok", 0) + stato.get("totale_ko", 0),
+            "domande_sessione": domande_sessione,
+            "capitolo": S.STORIA.get(stato.get("nodo"), {}).get("capitolo", "?"),
+            "frammenti": len(stato.get("frammenti", [])),
+        }
+        # Una riga per slot per giorno: il log resta leggibile nel tempo.
+        oggi = dati_partita["salvato"][:10]
+        for indice, esistente in enumerate(accessi):
+            if esistente.get("slot") == slot and str(esistente.get("quando", ""))[:10] == oggi:
+                accessi[indice] = voce
+                break
+        else:
+            accessi.append(voce)
+        del accessi[:-500]
+
+    return A.aggiorna(modifica)
 
 
-def carica(nome_slot: str) -> dict:
-    stato = json.loads(_percorso(nome_slot).read_text(encoding="utf-8"))
-    for chiave_mancante, default in (("scudo", 0), ("aiuto_attivo", False), ("morti", 0),
-                                     ("danno_base", DANNO_BASE), ("finita", False)):
-        stato.setdefault(chiave_mancante, default)
+def carica(nome_slot: str) -> dict | None:
+    stato = A.leggi().get("partite", {}).get(pulisci_slot(nome_slot))
+    if stato is None:
+        return None
+    stato = dict(stato)
+    for campo, default in (("scudo", 0), ("aiuto_attivo", False), ("morti", 0),
+                           ("danno_base", DANNO_BASE), ("finita", False),
+                           ("statistiche", {}), ("diario", []), ("frammenti", []),
+                           ("oggetti", {}), ("totale_ok", 0), ("totale_ko", 0)):
+        stato.setdefault(campo, default)
     return stato
 
 
+def carica_storico(nome_slot: str) -> dict:
+    slot = pulisci_slot(nome_slot)
+    grezzo = A.leggi().get("storici", {}).get(slot)
+    return ST.normalizza(grezzo or {}, slot)
+
+
+def salva_storico(storico: dict, nome_slot: str) -> bool:
+    slot = pulisci_slot(nome_slot)
+
+    def modifica(arch: dict) -> None:
+        arch["storici"][slot] = storico
+
+    return A.aggiorna(modifica)
+
+
+def elimina_partita(nome_slot: str, anche_storico: bool = False) -> bool:
+    slot = pulisci_slot(nome_slot)
+
+    def modifica(arch: dict) -> None:
+        arch["partite"].pop(slot, None)
+        if anche_storico:
+            arch["storici"].pop(slot, None)
+
+    return A.aggiorna(modifica)
+
+
 def elenco_salvataggi() -> list[dict]:
-    if not CARTELLA_SALVATAGGI.exists():
-        return []
     voci = []
-    for percorso in sorted(CARTELLA_SALVATAGGI.glob("*.json")):
-        try:
-            dati = json.loads(percorso.read_text(encoding="utf-8"))
-            voci.append({
-                "slot": percorso.stem,
-                "capitolo": S.STORIA.get(dati.get("nodo"), {}).get("capitolo", "?"),
-                "frammenti": len(dati.get("frammenti", [])),
-                "salvato": dati.get("salvato", "?"),
-            })
-        except Exception:
+    for slot, dati in sorted(A.leggi().get("partite", {}).items()):
+        if not isinstance(dati, dict):
             continue
-    return voci
+        voci.append({
+            "slot": slot,
+            "nome": dati.get("nome", slot),
+            "capitolo": S.STORIA.get(dati.get("nodo"), {}).get("capitolo", "?"),
+            "frammenti": len(dati.get("frammenti", [])),
+            "salvato": dati.get("salvato", "?"),
+            "finita": bool(dati.get("finita")),
+        })
+    return sorted(voci, key=lambda v: v["salvato"], reverse=True)
+
+
+def elenco_giocatori() -> list[str]:
+    arch = A.leggi()
+    return sorted(set(arch.get("partite", {})) | set(arch.get("storici", {})))
 
 
 # ---------------------------------------------------------------------------

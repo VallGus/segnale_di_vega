@@ -12,13 +12,20 @@ Simula tre sessioni della stessa giocatrice, con una debolezza mirata su 7x8 e
   4. la semina faccia uscire piu' spesso le moltiplicazioni fragili.
 """
 
+import os
 import random
-import shutil
 
-import archivio as A
-import motore as M
-import storia as S
-import storico as ST
+# PRIMA di importare archivio: la prova lavora su un file usa e getta, cosi' non
+# puo' toccare le partite vere. Senza questa riga il test azzererebbe i
+# salvataggi di casa, che e' un modo pessimo di guadagnare fiducia.
+os.environ["VEGA_ARCHIVIO"] = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "salvataggi", "_prova_usa_e_getta.json"
+)
+
+import archivio as A          # noqa: E402
+import motore as M            # noqa: E402
+import storia as S            # noqa: E402
+import storico as ST          # noqa: E402
 
 DEBOLI = {"7x8", "6x7"}
 
@@ -53,9 +60,10 @@ def gioca(slot: str, mosse: int, seme: int) -> dict:
 
 
 def main() -> None:
-    shutil.rmtree(A.CARTELLA_LOCALE, ignore_errors=True)
+    A.percorso_locale().unlink(missing_ok=True)
     A.invalida_cache()
 
+    print("archivio di prova:", A.percorso_locale().name)
     print("modalita' archivio:", A.modalita())
     print()
 

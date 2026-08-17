@@ -30,11 +30,24 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import time
 from pathlib import Path
 
 CARTELLA_LOCALE = Path(__file__).resolve().parent / "salvataggi"
-FILE_LOCALE = CARTELLA_LOCALE / "archivio_vega.json"
+
+
+def percorso_locale() -> Path:
+    """
+    Dove sta l'archivio in modalita' locale.
+
+    La variabile d'ambiente VEGA_ARCHIVIO permette di spostarlo: le prove la
+    usano per lavorare su un file usa e getta. Senza questa via d'uscita un test
+    che azzera l'archivio cancellerebbe le partite vere, ed e' esattamente
+    quello che e' successo la prima volta.
+    """
+    scelta = os.environ.get("VEGA_ARCHIVIO")
+    return Path(scelta).expanduser() if scelta else CARTELLA_LOCALE / "archivio_vega.json"
 
 AMBITI_DRIVE = ["https://www.googleapis.com/auth/drive"]
 
@@ -119,14 +132,16 @@ def _scrivi_drive(dati: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _leggi_locale() -> dict:
-    if not FILE_LOCALE.exists():
+    percorso = percorso_locale()
+    if not percorso.exists():
         return archivio_vuoto()
-    return json.loads(FILE_LOCALE.read_text(encoding="utf-8"))
+    return json.loads(percorso.read_text(encoding="utf-8"))
 
 
 def _scrivi_locale(dati: dict) -> None:
-    CARTELLA_LOCALE.mkdir(exist_ok=True)
-    FILE_LOCALE.write_text(json.dumps(dati, ensure_ascii=False, indent=1), encoding="utf-8")
+    percorso = percorso_locale()
+    percorso.parent.mkdir(parents=True, exist_ok=True)
+    percorso.write_text(json.dumps(dati, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

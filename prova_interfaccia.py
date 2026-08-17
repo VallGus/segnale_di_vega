@@ -9,11 +9,17 @@ storico non generino eccezioni. Non verifica l'estetica: verifica che nulla si
 rompa lungo i percorsi che una bambina percorre davvero.
 """
 
-import shutil
+import os
 
-from streamlit.testing.v1 import AppTest
+# PRIMA di importare archivio: si lavora su un file usa e getta, mai sulle
+# partite vere.
+os.environ["VEGA_ARCHIVIO"] = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "salvataggi", "_prova_interfaccia.json"
+)
 
-import archivio as A
+from streamlit.testing.v1 import AppTest   # noqa: E402
+
+import archivio as A                       # noqa: E402
 
 
 def controlla(app, passo: str) -> None:
@@ -32,7 +38,7 @@ def premi(app, etichetta: str):
 
 
 def main() -> None:
-    shutil.rmtree(A.CARTELLA_LOCALE, ignore_errors=True)
+    A.percorso_locale().unlink(missing_ok=True)
 
     app = AppTest.from_file("app.py", default_timeout=90).run()
     controlla(app, "apertura del menu")
